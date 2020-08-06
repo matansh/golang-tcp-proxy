@@ -37,11 +37,7 @@ func pipe(reader io.Reader, writer io.Writer) {
 }
 
 func handleConnection(readConn net.Conn) {
-	target, err := net.ResolveTCPAddr("tcp", targetAddress)
-	if err != nil {
-		log.Fatalf("%+v", errors.Wrapf(err, "failed resolving target %s", targetAddress))
-	}
-	writeConn, err := net.DialTCP("tcp", nil, target)
+	writeConn, err := net.Dial("tcp", targetAddress)
 	if err != nil {
 		log.Fatalf("%+v", errors.Wrapf(err, "failed to create a new connection to target %s", targetAddress))
 	}
@@ -59,7 +55,7 @@ func main() {
 
 	address := fmt.Sprintf("%s:%s", host, port)
 	log.Printf("serving tcp proxy on %s", address)
-	ln, err := net.Listen("tcp", address)
+	ln, err := net.Listen("tcp4", address)
 	if err != nil {
 		log.Fatalf("%+v", errors.Wrapf(err, "failed to listen on %s", address))
 	}

@@ -1,9 +1,10 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"github.com/pkg/errors"
-	"io"
+	"golang.org/x/sync/errgroup"
 	"log"
 	"net"
 	"os"
@@ -18,37 +19,56 @@ var targetPort string
 // non env global vars
 var targetAddress string
 
-func pipe(reader, writer net.Conn) {
-	defer func() { _ = reader.Close() }()
-	defer func() { _ = writer.Close() }()
-
-	for {
-		buffer := make([]byte, 1024)
-		n, err := reader.Read(buffer)
-		data := buffer[:n]
-		if err != nil {
-			if err == io.EOF {
-				break // gracefully exiting
+func pipe(ctx context.Context, reader, writer net.Conn) func() error {
+	return func() error {
+		for {
+			// checking that sister goroutine is still alive
+			select {
+			case <-ctx.Done():
+				// sister goroutine signals cancel
+				log.Println("sister goroutine signals cancel")
+				return nil
+			default:
+				// good to continue
 			}
-			log.Printf("%+v", errors.Wrap(err, "failed reading data"))
-			break
-		}
-		_, err = writer.Write(data)
-		if err != nil {
-			log.Printf("%+v", errors.Wrap(err, "failed writing data"))
-			break
+			buffer := make([]byte, 1024)
+			n, err := reader.Read(buffer)
+			data := buffer[:n]
+			if err != nil {
+				log.Printf("%v", errors.Wrapf(err, "connection %s", reader.RemoteAddr()))
+				return err
+			}
+			_, err = writer.Write(data)
+			if err != nil {
+				log.Printf("%v", errors.Wrapf(err, "connection %s", writer.RemoteAddr()))
+				return err
+			}
 		}
 	}
-	log.Printf("connection %s ended", reader.RemoteAddr())
 }
 
 func handleConnection(readConn net.Conn) {
+	defer func() {
+		if err := readConn.Close(); err != nil {
+			log.Printf("%v", errors.Wrapf(err, "failed closing connection %s", readConn.RemoteAddr()))
+		}
+	}()
 	writeConn, err := net.Dial("tcp", targetAddress)
 	if err != nil {
 		log.Printf("%+v", errors.Wrapf(err, "failed to create a new connection to target %s", targetAddress))
 	}
-	go pipe(readConn, writeConn)
-	go pipe(writeConn, readConn)
+	defer func() {
+		if err := writeConn.Close(); err != nil {
+			log.Printf("%v", errors.Wrapf(err, "failed closing connection %s", writeConn.RemoteAddr()))
+		}
+	}()
+	// as this is a bi-directional proxy if one of our connections closes we need to clean up its "sister" connection
+	eg, ctx := errgroup.WithContext(context.Background())
+
+	eg.Go(pipe(ctx, readConn, writeConn))
+	eg.Go(pipe(ctx, writeConn, readConn))
+
+	_ = eg.Wait() // waiting here to avoid closing the connections prematurely
 }
 
 func main() {
